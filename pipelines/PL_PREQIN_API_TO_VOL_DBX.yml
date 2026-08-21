@@ -1,0 +1,71 @@
+resources:
+  jobs:
+    PL_PREQIN_API_TO_VOL_DBX:
+      name: PL_PREQIN_API_TO_VOL_DBX
+      email_notifications:
+        no_alert_for_skipped_runs: true
+      notification_settings:
+        no_alert_for_skipped_runs: true
+        no_alert_for_canceled_runs: true
+      max_concurrent_runs: 10
+      tasks:
+        - task_key: process_single_endpoint
+          notebook_task:
+            notebook_path: ../notebooks/ingestion/NB_PREQIN_API_EXTRACTION_TO_VOLUME
+            base_parameters:
+              endpoint_data: "{{job.parameters.endpoint_data}}"
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              access_token: "{{job.parameters.access_token}}"
+          description: "Process single API endpoint: call API, parse response, write to
+            bronze table."
+        - task_key: insert_audit_log
+          depends_on:
+            - task_key: process_single_endpoint
+          run_if: ALL_DONE
+          sql_task:
+            parameters:
+              catalog: "{{job.parameters.catalog}}"
+              endpoint_url: "{{tasks.process_single_endpoint.values.endpoint_url}}"
+              target_table: "{{tasks.process_single_endpoint.values.target_table}}"
+              domain: "{{tasks.process_single_endpoint.values.domain}}"
+              run_id: "{{job.run_id}}"
+              schema: "{{job.parameters.schema}}"
+              status: "{{tasks.process_single_endpoint.values.status}}"
+              watermark_value_used: "{{tasks.process_single_endpoint.values.watermark_value_used}}"
+              created_timestamp: "{{job.start_time.iso_datetime}}"
+              error_message: "{{tasks.process_single_endpoint.values.error_message}}"
+            file:
+              path: ../sql/dml/SQL_PREQIN_AUDIT_LOG_INSERT.sql
+            warehouse_id: ${var.warehouse_id}
+          max_retries: 2
+          min_retry_interval_millis: 30000
+          description: Insert audit log entry for this endpoint.
+        - task_key: update_watermark
+          depends_on:
+            - task_key: process_single_endpoint
+          sql_task:
+            parameters:
+              last_watermark_value: "{{tasks.process_single_endpoint.values.last_watermark_value}}"
+              catalog: "{{job.parameters.catalog}}"
+              target_table: "{{tasks.process_single_endpoint.values.target_table}}"
+              schema: "{{job.parameters.schema}}"
+              status: "{{tasks.process_single_endpoint.values.status}}"
+            file:
+              path: ../sql/dml/SQL_PREQIN_API_WATERMARK_UPDATE.sql
+            warehouse_id: ${var.warehouse_id}
+          max_retries: 2
+          min_retry_interval_millis: 30000
+          description: MERGE audit results into watermark table for this endpoint.
+      queue:
+        enabled: true
+      parameters:
+        - name: endpoint_data
+          default: "{}"
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: bronze_preqin
+        - name: access_token
+          default: ""
+      performance_target: PERFORMANCE_OPTIMIZED

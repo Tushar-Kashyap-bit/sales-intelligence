@@ -1,0 +1,12 @@
+# Centralized variable definitions for the Sales Intelligence bundle.
+# Target-specific values are set in databricks.yml under each target.
+
+variables:
+  environment:
+    description: "Target environment (DEV, UAT, PROD)"
+    default: "DEV"
+  catalog:
+    description: "Unity Catalog name - resolved per target (dev/uat/prod)"
+    default: "dev"
+  warehouse_id:
+    description: "SQL Warehouse ID"
