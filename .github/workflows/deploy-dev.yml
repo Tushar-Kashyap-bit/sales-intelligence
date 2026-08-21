@@ -17,7 +17,6 @@ env:
   DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_DEV }}
   ENVIRONMENT: dev
   CATALOG: dev
-  WORKSPACE_PATH: /Workspace/Users/ext_tkashyap@cimgroup.com/Sales/Preqin
 
 jobs:
   validate:
@@ -32,35 +31,10 @@ jobs:
       - name: Validate bundle
         run: databricks bundle validate --target dev
 
-  deploy-notebooks:
-    name: Deploy Notebooks & SQL
+  deploy-bundle:
+    name: Deploy Bundle to DEV
     runs-on: ubuntu-latest
     needs: validate
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Databricks CLI
-        uses: databricks/setup-cli@main
-
-      - name: Deploy ingestion notebooks
-        run: |
-          databricks workspace import-dir ./notebooks/ingestion \
-            "${{ env.WORKSPACE_PATH }}/notebooks/ingestion" --overwrite
-
-      - name: Deploy transform notebooks
-        run: |
-          databricks workspace import-dir ./notebooks/transform \
-            "${{ env.WORKSPACE_PATH }}/notebooks/transform" --overwrite
-
-      - name: Deploy SQL scripts
-        run: |
-          databricks workspace import-dir ./sql/dml \
-            "${{ env.WORKSPACE_PATH }}/sql/dml" --overwrite
-
-  deploy-pipelines:
-    name: Deploy Pipelines to DEV
-    runs-on: ubuntu-latest
-    needs: deploy-notebooks
     steps:
       - uses: actions/checkout@v4
 
@@ -73,7 +47,7 @@ jobs:
   run-tests:
     name: Run Data Quality Tests
     runs-on: ubuntu-latest
-    needs: deploy-pipelines
+    needs: deploy-bundle
     steps:
       - uses: actions/checkout@v4
 
@@ -82,5 +56,5 @@ jobs:
 
       - name: Run unit tests
         run: |
-          databricks workspace import-dir ./tests/unit \
-            "${{ env.WORKSPACE_PATH }}/tests/unit" --overwrite
+          # Unit tests will be managed by the bundle
+          echo "Unit tests configured in bundle"
