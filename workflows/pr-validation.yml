@@ -1,0 +1,54 @@
+# Validate pipeline changes on pull requests
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [develop, staging, main]
+    paths:
+      - "pipelines/**"
+      - "notebooks/**"
+      - "sql/**"
+      - "databricks.yml"
+
+env:
+  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST_DEV }}
+  DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_DEV }}
+
+jobs:
+  lint:
+    name: Lint & Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install linters
+        run: pip install yamllint ruff
+
+      - name: Lint YAML pipeline definitions
+        run: yamllint -d relaxed ./pipelines/
+
+      - name: Lint Python notebooks
+        run: ruff check ./notebooks/ --select E,F,W --ignore E501
+
+  validate-bundle:
+    name: Validate Databricks Bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Databricks CLI
+        uses: databricks/setup-cli@main
+
+      - name: Validate bundle for DEV
+        run: databricks bundle validate --target dev
+
+      - name: Validate bundle for UAT
+        run: databricks bundle validate --target uat
+
+      - name: Validate bundle for PROD
+        run: databricks bundle validate --target prod
