@@ -1,0 +1,255 @@
+-- ---------------------------------------------------------------------------
+-- Preqin API Watermark Table Setup (Single-Run SQL Script)
+-- Creates and seeds the control table that drives incremental ingestion.
+-- Run against: dev.bronze_preqin (or replace catalog/schema as needed).
+-- ---------------------------------------------------------------------------
+
+
+DECLARE OR REPLACE VARIABLE catalog STRING DEFAULT '${var.catalog}';
+DECLARE OR REPLACE VARIABLE bronze_schema STRING DEFAULT 'bronze_preqin';
+
+-- ============================================================
+-- STEP 1: CREATE TABLE (idempotent)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS IDENTIFIER(catalog || '.' || bronze_schema || '.preqin_api_watermark') (
+  source_system         STRING        NOT NULL
+                                      COMMENT 'Source system identifier (e.g., preqin). Composite PK with endpoint_url.',
+  api_name              STRING        NOT NULL
+                                      COMMENT 'Logical name of the API endpoint (e.g., Fund Managers PE, Deals INF).',
+  api_domain            STRING        NOT NULL
+                                      COMMENT 'Business domain grouping (e.g., funds, deals, esg, investors).',
+  endpoint_url          STRING        NOT NULL
+                                      COMMENT 'Full API route path (e.g., /api/fund/pe). Composite PK with source_system.',
+  api_version_used      INT           COMMENT 'API version used for ingestion (e.g., 260203).',
+  is_incremental        BOOLEAN       COMMENT 'Whether this endpoint supports incremental loading (true) or full refresh (false).',
+  refresh_frequency     STRING        COMMENT 'Call frequency (e.g., daily, weekly). Drives scheduler configuration.',
+  primary_key_columns   STRING        COMMENT 'Comma-separated PK columns in target table. Used for MERGE/upsert logic.',
+  last_watermark_value  INT           COMMENT 'Last processed watermark value in YYMMDD format (e.g., 260203). Filter for next incremental pull.',
+  target_table          STRING        COMMENT 'Target table name only. Catalog and schema managed at pipeline level.',
+  is_active             BOOLEAN       COMMENT 'Whether this endpoint is actively ingested. Set false to disable.'
+)
+USING DELTA
+COMMENT 'Watermark/control table for Preqin API ingestion. Tracks load state, API config, and execution history per endpoint.'
+TBLPROPERTIES (
+  'delta.enableChangeDataFeed' = 'true',
+  'delta.autoOptimize.optimizeWrite' = 'true',
+  'delta.autoOptimize.autoCompact' = 'true',
+  'delta.columnMapping.mode' = 'name'
+);
+
+
+-- ============================================================
+-- STEP 2: SEED DATA (MERGE updates existing rows and inserts new rows)
+-- Edit the seed rows below when endpoint metadata or versions change.
+-- Re-run to update existing rows and insert new endpoints.
+-- ============================================================
+MERGE INTO IDENTIFIER(catalog || '.' || bronze_schema || '.preqin_api_watermark') AS tgt
+USING (
+  WITH seed AS (
+    SELECT *
+    FROM VALUES
+    ('preqin', 'Asset Level Benchmark Deal Performance', 'benchmarks', '/api/assetlevelbenchmark/deal/performance', 260717, false, 'daily', 'BENCHMARK ID', NULL, 'asset_level_benchmark_deal_performance', false),
+    ('preqin', 'Asset Level Benchmark Deal Valuation', 'benchmarks', '/api/assetlevelbenchmark/deal/valuation', 260717, false, 'daily', 'BENCHMARK ID', NULL, 'asset_level_benchmark_deal_valuation', false),
+    ('preqin', 'Benchmark Constituent Funds PC', 'benchmarks', '/api/benchmark/pc/constituentfunds', 260717, true, 'daily', 'FUND ID,BENCHMARK ID,BENCHMARK VINTAGE,CONSTITUENT AS AT DATE', NULL, 'benchmark_constituent_funds_pc', true),
+    ('preqin', 'Benchmark PC Quarterly Index', 'benchmarks', '/api/benchmark/indices/pc/closedend', 260717, false, 'daily', 'DATE,INDEX', NULL, 'benchmark_pc_quarterly_index', true),
+    ('preqin', 'Hedge Fund Benchmarks', 'benchmarks', '/api/benchmark/hf', 260717, true, 'daily', 'BENCHMARK ID,COMPOSITE BENCHMARK ID,PERFORMANCE AS AT,FUND TYPE,STRATEGY', NULL, 'hedge_fund_benchmarks', false),
+    ('preqin', 'Private Capital Benchmarks', 'benchmarks', '/api/benchmark/pc', 260717, true, 'daily', 'BENCHMARK ID,COMPOSITE BENCHMARK ID,BENCHMARK REGION NAME,STRATEGY,CONSTITUENT AS AT,BENCHMARK VINTAGE', NULL, 'private_capital_benchmarks', true),
+    ('preqin', 'Cashflow', 'cashflow', '/api/cashflow', 260717, true, 'daily', 'FUND ID,FIRM ID,TRANSACTION TYPE,TRANSACTION DATE', NULL, 'cashflow', false),
+    ('preqin', 'CI Company Ownership', 'company_intelligence', '/api/asset/company/ownership', 260717, true, 'daily', 'COMPANY ID,FIRM ID', NULL, 'ci_company_ownership', false),
+    ('preqin', 'CI Current Investors', 'company_intelligence', '/api/asset/company/currentinvestor', 260501, true, 'daily', 'COMPANY ID', NULL, 'ci_current_investors', false),
+    ('preqin', 'CI Deal Buyout Fundamental', 'company_intelligence', '/api/asset/dealbuyout/fundamental', 251111, true, 'daily', 'DEAL ID,OLD DEAL ID,TARGET ID', NULL, 'ci_deal_buyout_fundamental', false),
+    ('preqin', 'CI Deals Buyout', 'company_intelligence', '/api/asset/company/dealbuyout', 251111, true, 'daily', 'DEAL ID,PORTFOLIO COMPANY ID', NULL, 'ci_deals_buyout', false),
+    ('preqin', 'CI Deals VC', 'company_intelligence', '/api/asset/company/dealvc', 251111, true, 'daily', 'DEAL ID,PORTFOLIO COMPANY ID', NULL, 'ci_deals_vc', false),
+    ('preqin', 'CI Employees', 'company_intelligence', '/api/asset/company/employee', 260717, true, 'daily', 'COMPANY ID,YEAR', NULL, 'ci_employees', false),
+    ('preqin', 'CI Financials', 'company_intelligence', '/api/asset/company/financial', 260717, true, 'daily', 'COMPANY ID,REPORTING DATE', NULL, 'ci_financials', false),
+    ('preqin', 'CI Key Contact Executives', 'company_intelligence', '/api/asset/company/keycontactexecutive', 260717, true, 'daily', 'UID', NULL, 'ci_key_contact_executives', false),
+    ('preqin', 'CI Key Contact Lead Partners', 'company_intelligence', '/api/asset/company/keycontactleadpartner', 260717, true, 'daily', 'COMPANY ID,CONTACT ID', NULL, 'ci_key_contact_lead_partners', false),
+    ('preqin', 'CI Summaries', 'company_intelligence', '/api/asset/company/summary', 260717, true, 'daily', 'COMPANY ID', NULL, 'ci_summaries', false),
+    ('preqin', 'Asset Company Deal Buyout Fundamental', 'deals', '/api/deal/asset/company/fundamental/buyout', 260717, true, 'daily', 'DEAL ID', NULL, 'asset_company_deal_buyout_fundamental', false),
+    ('preqin', 'Asset Company Deal PD Fundamental', 'deals', '/api/deal/asset/company/fundamental/pd', 260717, true, 'daily', 'DEAL ID', NULL, 'asset_company_deal_pd_fundamental', false),
+    ('preqin', 'Asset Company Deal VC Fundamental', 'deals', '/api/deal/asset/company/fundamental/vc', 260717, true, 'daily', 'DEAL ID', NULL, 'asset_company_deal_vc_fundamental', false),
+    ('preqin', 'Asset Deal Buyout Fundamental', 'deals', '/api/deal/asset/fundamental/buyout', 260717, true, 'daily', 'DEAL ID', NULL, 'asset_deal_buyout_fundamental', true),
+    ('preqin', 'Asset Deal PD Fundamental', 'deals', '/api/deal/asset/fundamental/pd', 260717, true, 'daily', 'DEAL ID', NULL, 'asset_deal_pd_fundamental', true),
+    ('preqin', 'Asset Deal VC Fundamental', 'deals', '/api/deal/asset/fundamental/vc', 260717, true, 'daily', 'DEAL ID', NULL, 'asset_deal_vc_fundamental', true),
+    ('preqin', 'Buyout Exits', 'deals', '/api/deal/exit/buyout', 251111, true, 'daily', 'DEAL ID,EXIT ID,PORTFOLIO COMPANY ID', NULL, 'buyout_exits', true),
+    ('preqin', 'Deal Investor Buyout', 'deals', '/api/deal/investor/buyout', 260717, true, 'daily', 'DEAL ID,INVESTOR/BUYER ID,FUND ID', NULL, 'deal_investor_buyout', true),
+    ('preqin', 'Deal Investor PD', 'deals', '/api/deal/investor/pd', 260717, true, 'daily', 'DEAL ID,INVESTOR/BUYER ID,FUND ID,DEBT PROVIDER ID,TRANCHE ID', NULL, 'deal_investor_pd', true),
+    ('preqin', 'Deal Investor VC', 'deals', '/api/deal/investor/vc', 260717, true, 'daily', 'DEAL ID,INVESTOR/BUYER ID,FUND ID', NULL, 'deal_investor_vc', true),
+    ('preqin', 'Deal Party Buyout', 'deals', '/api/deal/dealparties/buyout', 260717, true, 'daily', 'DEAL ID,MAPPED ENTITY ID,MAPPED ENTITY TYPE,INVESTOR/SELLER/SERVICEPROVIDER ID,TRANCHE ID', NULL, 'deal_party_buyout', true),
+    ('preqin', 'Deal Party PD', 'deals', '/api/deal/dealparties/pd', 260717, true, 'daily', 'DEAL ID,MAPPED ENTITY ID,MAPPED ENTITY TYPE,INVESTOR/SELLER/SERVICEPROVIDER ID,TRANCHE ID', NULL, 'deal_party_pd', true),
+    ('preqin', 'Deal Party VC', 'deals', '/api/deal/dealparties/vc', 260717, true, 'daily', 'DEAL ID,MAPPED ENTITY ID,MAPPED ENTITY TYPE,INVESTOR/SELLER/SERVICEPROVIDER ID,TRANCHE ID', NULL, 'deal_party_vc', true),
+    ('preqin', 'Deal Seller Buyout', 'deals', '/api/deal/seller/buyout', 260717, true, 'daily', 'DEAL ID,SELLER ID', NULL, 'deal_seller_buyout', true),
+    ('preqin', 'Deal Seller PD', 'deals', '/api/deal/seller/pd', 260717, true, 'daily', 'DEAL ID,SELLER ID', NULL, 'deal_seller_pd', true),
+    ('preqin', 'Deal Seller VC', 'deals', '/api/deal/seller/vc', 260717, true, 'daily', 'DEAL ID,SELLER ID', NULL, 'deal_seller_vc', true),
+    ('preqin', 'Deal/Buyer Mapping Buyout', 'deals', '/api/deal/investor/buyout', 251111, true, 'daily', 'DEAL ID,INVESTOR/BUYER ID,FUND ID', NULL, 'deal_buyer_mapping_buyout', false),
+    ('preqin', 'Deal/Buyer Mapping INF', 'deals', '/api/deal/investor/inf', 260717, true, 'daily', 'DEAL ID,INVESTOR/BUYER ID,ASSET ID,FUND ID', NULL, 'deal_buyer_mapping_inf', true),
+    ('preqin', 'Deal/Buyer Mapping PD', 'deals', '/api/deal/investor/pd', 251111, true, 'daily', 'DEAL ID,INVESTOR/BUYER ID,FUND ID,DEBT PROVIDER ID,TRANCHE ID', NULL, 'deal_buyer_mapping_pd', false),
+    ('preqin', 'Deal/Buyer Mapping RE', 'deals', '/api/deal/investor/re', 260717, true, 'daily', 'DEAL ID,INVESTOR/BUYER ID,FUND ID', NULL, 'deal_buyer_mapping_re', true),
+    ('preqin', 'Deal/Buyer Mapping RE (Assets)', 'deals', '/api/deal/asset/re', 260717, true, 'daily', 'DEAL ID,ASSET ID,FUND ID', NULL, 'deal_buyer_mapping_re_assets', true),
+    ('preqin', 'Deal/Buyer Mapping VC', 'deals', '/api/deal/investor/vc', 251111, true, 'daily', 'DEAL ID,INVESTOR/BUYER ID,FUND ID', NULL, 'deal_buyer_mapping_vc', false),
+    ('preqin', 'Deals Buyout', 'deals', '/api/deal/buyout', 251111, true, 'daily', 'DEAL ID,PORTFOLIO COMPANY ID', NULL, 'deals_buyout', true),
+    ('preqin', 'Deals INF', 'deals', '/api/deal/inf', 260717, true, 'daily', 'DEAL ID', NULL, 'deals_inf', true),
+    ('preqin', 'Deals PD', 'deals', '/api/deal/pd', 251111, true, 'daily', 'DEAL ID,PORTFOLIO COMPANY ID', NULL, 'deals_pd', true),
+    ('preqin', 'Deals RE', 'deals', '/api/deal/re', 260717, true, 'daily', 'DEAL ID', NULL, 'deals_re', true),
+    ('preqin', 'Deals Service Providers Mapping Buyout', 'deals', '/api/deal/serviceprovider/buyout', 251111, true, 'daily', 'DEAL ID,MAPPED ENTITY ID,MAPPED ENTITY NAME,MAPPED ENTITY TYPE,INVESTOR/BUYERID,TRANCHE ID', NULL, 'deals_service_providers_mapping_buyout', true),
+    ('preqin', 'Deals Service Providers Mapping INF', 'deals', '/api/deal/serviceprovider/inf', 260717, true, 'daily', 'DEAL ID,MAPPED ENTITY ID,MAPPED ENTITY NAME,MAPPED ENTITY TYPE,INVESTOR/BUYERID,TRANCHE ID', NULL, 'deals_service_providers_mapping_inf', true),
+    ('preqin', 'Deals Service Providers Mapping PD', 'deals', '/api/deal/serviceprovider/pd', 251111, true, 'daily', 'DEAL ID,MAPPED ENTITY ID,MAPPED ENTITY NAME,MAPPED ENTITY TYPE,INVESTOR/BUYERID,TRANCHE ID', NULL, 'deals_service_providers_mapping_pd', true),
+    ('preqin', 'Deals Service Providers Mapping RE', 'deals', '/api/deal/serviceprovider/re', 260717, true, 'daily', 'DEAL ID,MAPPED ENTITY ID,MAPPED ENTITY NAME,MAPPED ENTITY TYPE,ASSET TYPE,TRANCHE ID', NULL, 'deals_service_providers_mapping_re', true),
+    ('preqin', 'Deals Service Providers Mapping VC', 'deals', '/api/deal/serviceprovider/vc', 251111, true, 'daily', 'DEAL ID,MAPPED ENTITY ID,MAPPED ENTITY NAME,MAPPED ENTITY TYPE,INVESTOR/BUYERID,TRANCHE ID', NULL, 'deals_service_providers_mapping_vc', true),
+    ('preqin', 'Deals VC', 'deals', '/api/deal/vc', 251111, true, 'daily', 'DEAL ID,PORTFOLIO COMPANY ID', NULL, 'deals_vc', true),
+    ('preqin', 'Tranche Details Buyout', 'deals', '/api/deal/tranche/buyout', 260717, true, 'daily', 'DEAL ID,TRANCHE ID', NULL, 'tranche_details_buyout', true),
+    ('preqin', 'Tranche Details INF', 'deals', '/api/deal/tranche/inf', 260717, true, 'daily', 'DEAL ID,TRANCHE ID', NULL, 'tranche_details_inf', true),
+    ('preqin', 'Tranche Details PD', 'deals', '/api/deal/tranche/pd', 260717, true, 'daily', 'DEAL ID,TRANCHE ID', NULL, 'tranche_details_pd', true),
+    ('preqin', 'Tranche Details RE', 'deals', '/api/deal/tranche/re', 260717, true, 'daily', 'DEAL ID,TRANCHE ID', NULL, 'tranche_details_re', true),
+    ('preqin', 'Tranche Details VC', 'deals', '/api/deal/tranche/vc', 260717, true, 'daily', 'DEAL ID,TRANCHE ID', NULL, 'tranche_details_vc', true),
+    ('preqin', 'VC Exits', 'deals', '/api/deal/exit/vc', 251111, true, 'daily', 'DEAL ID,EXIT ID,PORTFOLIO COMPANY ID', NULL, 'vc_exits', true),
+    ('preqin', 'Dry Powder INF', 'dry_powder', '/api/drypowder/inf', 260717, true, 'daily', 'DATE', NULL, 'dry_powder_inf', true),
+    ('preqin', 'Dry Powder NR', 'dry_powder', '/api/drypowder/nr', 260717, true, 'daily', 'DATE', NULL, 'dry_powder_nr', false),
+    ('preqin', 'Dry Powder PD', 'dry_powder', '/api/drypowder/pd', 260717, true, 'daily', 'DATE', NULL, 'dry_powder_pd', true),
+    ('preqin', 'Dry Powder PE', 'dry_powder', '/api/drypowder/pe', 260717, true, 'daily', 'DATE', NULL, 'dry_powder_pe', true),
+    ('preqin', 'Dry Powder RE', 'dry_powder', '/api/drypowder/re', 260717, true, 'daily', 'DATE', NULL, 'dry_powder_re', true),
+    ('preqin', 'ESG Asset Impact', 'esg', '/api/esg/asset/impact', 260717, true, 'weekly', 'ASSET ID', NULL, 'esg_asset_impact', false),
+    ('preqin', 'ESG Asset Risk', 'esg', '/api/esg/asset/risk', 260717, true, 'weekly', 'ASSET ID', NULL, 'esg_asset_risk', false),
+    ('preqin', 'ESG Asset Risk Employee Metrics', 'esg', '/api/esg/asset/employee', 260717, true, 'weekly', 'ASSET ID,YEAR', NULL, 'esg_asset_risk_employee_metrics', false),
+    ('preqin', 'ESG Asset Risk SASB Factors', 'esg', '/api/esg/asset/sasb', 260717, true, 'weekly', 'ASSET ID,SASB ID', NULL, 'esg_asset_risk_sasb_factors', false),
+    ('preqin', 'ESG Fund Fund Manager Transparency', 'esg', '/api/esg/fund/fundmanager/transparency', 260717, true, 'weekly', 'FUND ID', NULL, 'esg_fund_fund_manager_transparency', false),
+    ('preqin', 'ESG Fund GP Affiliation', 'esg', '/api/esg/fund/fundmanager/affiliation', 260717, true, 'weekly', 'FUND ID,AFFILIATION ID', NULL, 'esg_fund_gp_affiliation', false),
+    ('preqin', 'ESG Fund Impact', 'esg', '/api/esg/fund/impact', 260717, true, 'weekly', 'FUND ID', NULL, 'esg_fund_impact', false),
+    ('preqin', 'ESG Fund Impact Asset', 'esg', '/api/esg/fund/impact/asset', 260717, true, 'weekly', 'FUND ID,PORTFOLIO COMPANY ID', NULL, 'esg_fund_impact_asset', false),
+    ('preqin', 'ESG Fund Manager Affiliation', 'esg', '/api/esg/fundmanager/affiliation', 260717, true, 'weekly', 'FIRM ID,AFFILIATION ID', NULL, 'esg_fund_manager_affiliation', false),
+    ('preqin', 'ESG Fund Manager Contact', 'esg', '/api/esg/fundmanager/contact', 260717, true, 'weekly', 'FIRM ID,CONTACT ID', NULL, 'esg_fund_manager_contact', false),
+    ('preqin', 'ESG Fund Manager Impact Potential', 'esg', '/api/esg/fundmanager/impact/potential', 260717, true, 'weekly', 'FIRM ID,FUND ID', NULL, 'esg_fund_manager_impact_potential', false),
+    ('preqin', 'ESG Fund Manager Regulatory Disclosures', 'esg', '/api/esg/fundmanager/regulatorydisclosures', 260717, true, 'weekly', 'FIRM ID,REGULATORY DISCLOSURE ID', NULL, 'esg_fund_manager_regulatory_disclosures', false),
+    ('preqin', 'ESG Fund Manager Risk', 'esg', '/api/esg/fundmanager/risk/exposure', 260717, true, 'weekly', 'FIRM ID,FUND ID', NULL, 'esg_fund_manager_risk', false),
+    ('preqin', 'ESG Fund Manager Risk SASB Factors', 'esg', '/api/esg/fundmanager/risk/sasb', 260717, true, 'weekly', 'FIRM ID', NULL, 'esg_fund_manager_risk_sasb_factors', false),
+    ('preqin', 'ESG Fund Manager Transparency', 'esg', '/api/esg/fundmanager/transparency', 260717, true, 'weekly', 'FIRM ID', NULL, 'esg_fund_manager_transparency', false),
+    ('preqin', 'ESG Fund Manager Transparency Indicator', 'esg', '/api/esg/fundmanager/transparency/indicator', 260717, true, 'weekly', 'FIRM ID,INDICATOR ID', NULL, 'esg_fund_manager_transparency_indicator', false),
+    ('preqin', 'ESG Fund Risk', 'esg', '/api/esg/fund/risk', 260717, true, 'weekly', 'FUND ID', NULL, 'esg_fund_risk', false),
+    ('preqin', 'ESG Fund Risk Asset', 'esg', '/api/esg/fund/risk/asset', 260717, true, 'weekly', 'FUND ID,PORTFOLIO COMPANY ID', NULL, 'esg_fund_risk_asset', false),
+    ('preqin', 'ESG Investor Affiliation', 'esg', '/api/esg/investor/affiliation', 260717, true, 'weekly', 'FIRM ID,AFFILIATION ID', NULL, 'esg_investor_affiliation', false),
+    ('preqin', 'ESG Investor Contact', 'esg', '/api/esg/investor/contact', 260717, true, 'weekly', 'FIRM ID,CONTACT ID', NULL, 'esg_investor_contact', false),
+    ('preqin', 'ESG Investor Fund Manager Transparency', 'esg', '/api/esg/investor/fundmanager/transparency', 260717, true, 'weekly', 'FIRM ID,FUND MANAGER ID', NULL, 'esg_investor_fund_manager_transparency', false),
+    ('preqin', 'ESG Investor Transparency', 'esg', '/api/esg/investor/transparency', 260717, true, 'weekly', 'FIRM ID,INDICATOR ID', NULL, 'esg_investor_transparency', false),
+    ('preqin', 'Fund Manager Contacts HF', 'fund_managers', '/api/fundmanager/contact/hf', 260717, true, 'daily', 'FIRM_ID,CONTACT_ID', NULL, 'fund_manager_contacts_hf', false),
+    ('preqin', 'Fund Manager Contacts INF', 'fund_managers', '/api/fundmanager/contact/inf', 260717, true, 'daily', 'FIRM_ID,CONTACT_ID', NULL, 'fund_manager_contacts_inf', true),
+    ('preqin', 'Fund Manager Contacts NR', 'fund_managers', '/api/fundmanager/contact/nr', 260717, true, 'daily', 'FIRM_ID,CONTACT_ID', NULL, 'fund_manager_contacts_nr', false),
+    ('preqin', 'Fund Manager Contacts PD', 'fund_managers', '/api/fundmanager/contact/pd', 260717, true, 'daily', 'FIRM_ID,CONTACT_ID', NULL, 'fund_manager_contacts_pd', true),
+    ('preqin', 'Fund Manager Contacts PE', 'fund_managers', '/api/fundmanager/contact/pe', 260717, true, 'daily', 'FIRM_ID,CONTACT_ID', NULL, 'fund_manager_contacts_pe', true),
+    ('preqin', 'Fund Manager Contacts RE', 'fund_managers', '/api/fundmanager/contact/re', 260717, true, 'daily', 'FIRM_ID,CONTACT_ID', NULL, 'fund_manager_contacts_re', true),
+    ('preqin', 'Fund Manager Geolocations', 'fund_managers', '/api/fundmanager/geolocations', 260717, true, 'daily', 'FIRM ID,GOOGLE MAP PLACE ID', NULL, 'fund_manager_geolocations', true),
+    ('preqin', 'Fund Managers (Common)', 'fund_managers', '/api/fundmanager', 260717, true, 'daily', 'FIRM ID', NULL, 'fund_managers_common', true),
+    ('preqin', 'Fund Managers HF', 'fund_managers', '/api/fundmanager/hf', 260717, true, 'daily', 'FIRM ID', NULL, 'fund_managers_hf', false),
+    ('preqin', 'Fund Managers INF', 'fund_managers', '/api/fundmanager/inf', 260717, true, 'daily', 'FIRM ID', NULL, 'fund_managers_inf', true),
+    ('preqin', 'Fund Managers NR', 'fund_managers', '/api/fundmanager/nr', 260717, true, 'daily', 'FIRM ID', NULL, 'fund_managers_nr', false),
+    ('preqin', 'Fund Managers PD', 'fund_managers', '/api/fundmanager/pd', 260717, true, 'daily', 'FIRM ID', NULL, 'fund_managers_pd', true),
+    ('preqin', 'Fund Managers PE', 'fund_managers', '/api/fundmanager/pe', 260717, true, 'daily', 'FIRM ID', NULL, 'fund_managers_pe', true),
+    ('preqin', 'Fund Managers RE', 'fund_managers', '/api/fundmanager/re', 260717, true, 'daily', 'FIRM ID', NULL, 'fund_managers_re', true),
+    ('preqin', 'Performance HF (AUM)', 'fund_performance', '/api/fundperformance/aum/hf', 260717, true, 'daily', 'FUND ID,AUM AS AT', NULL, 'performance_hf_aum', false),
+    ('preqin', 'Performance HF (Returns Summary)', 'fund_performance', '/api/fundperformance/summary/hf', 260717, true, 'daily', 'PERFORMANCE AS AT,FUND ID', NULL, 'performance_hf_returns_summary', false),
+    ('preqin', 'Performance HF (Returns)', 'fund_performance', '/api/fundperformance/hf', 260717, true, 'daily', 'PERFORMANCE AS AT,FUND ID', NULL, 'performance_hf_returns', false),
+    ('preqin', 'Performance INF', 'fund_performance', '/api/fundperformance/inf', 260717, true, 'daily', 'FUND ID,AS AT DATE', NULL, 'performance_inf', true),
+    ('preqin', 'Performance NR', 'fund_performance', '/api/fundperformance/nr', 260717, true, 'daily', 'FUND ID,AS AT DATE', NULL, 'performance_nr', false),
+    ('preqin', 'Performance PD', 'fund_performance', '/api/fundperformance/pd', 260717, true, 'daily', 'FUND ID,AS AT DATE', NULL, 'performance_pd', true),
+    ('preqin', 'Performance PE', 'fund_performance', '/api/fundperformance/pe', 260717, true, 'daily', 'FUND ID,AS AT DATE', NULL, 'performance_pe', true),
+    ('preqin', 'Performance RE', 'fund_performance', '/api/fundperformance/re', 260717, true, 'daily', 'FUND ID,AS AT DATE', NULL, 'performance_re', true),
+    ('preqin', 'Fund Terms', 'fund_service_providers', '/api/fundterms', 260717, false, 'daily', 'FUND', NULL, 'fund_terms', true),
+    ('preqin', 'Funds Service Providers', 'fund_service_providers', '/api/fundserviceprovider', 260717, true, 'daily', 'FIRM ID', NULL, 'funds_service_providers', true),
+    ('preqin', 'Fund Asset Flow HF', 'funds', '/api/fund/assetflow/hf', 260717, false, 'daily', 'FUND ID', NULL, 'fund_asset_flow_hf', false),
+    ('preqin', 'Fund Service Providers Mapping HF', 'funds', '/api/fund/serviceprovider/hf', 260717, true, 'daily', 'FUND ID,FUND SERVICE PROVIDER FIRM ID,FIRM TYPE', NULL, 'fund_service_providers_mapping_hf', false),
+    ('preqin', 'Fund Service Providers Mapping INF', 'funds', '/api/fund/serviceprovider/inf', 260717, true, 'daily', 'FUND ID,FUND SERVICE PROVIDER FIRM ID,FIRM TYPE', NULL, 'fund_service_providers_mapping_inf', true),
+    ('preqin', 'Fund Service Providers Mapping NR', 'funds', '/api/fund/serviceprovider/nr', 260717, true, 'daily', 'FUND ID,FUND SERVICE PROVIDER FIRM ID,FIRM TYPE', NULL, 'fund_service_providers_mapping_nr', false),
+    ('preqin', 'Fund Service Providers Mapping PD', 'funds', '/api/fund/serviceprovider/pd', 260717, true, 'daily', 'FUND ID,FUND SERVICE PROVIDER FIRM ID,FIRM TYPE', NULL, 'fund_service_providers_mapping_pd', true),
+    ('preqin', 'Fund Service Providers Mapping PE', 'funds', '/api/fund/serviceprovider/pe', 260717, true, 'daily', 'FUND ID,FUND SERVICE PROVIDER FIRM ID,FIRM TYPE', NULL, 'fund_service_providers_mapping_pe', true),
+    ('preqin', 'Fund Service Providers Mapping RE', 'funds', '/api/fund/serviceprovider/re', 260717, true, 'daily', 'FUND ID,FUND SERVICE PROVIDER FIRM ID,FIRM TYPE', NULL, 'fund_service_providers_mapping_re', true),
+    ('preqin', 'Fund Status INF', 'funds', '/api/fund/fundstatus/inf', 260717, true, 'daily', 'FUND ID,FUND STATUS', NULL, 'fund_status_inf', true),
+    ('preqin', 'Fund Status NR', 'funds', '/api/fund/fundstatus/nr', 260717, true, 'daily', 'FUND ID,FUND STATUS', NULL, 'fund_status_nr', false),
+    ('preqin', 'Fund Status PD', 'funds', '/api/fund/fundstatus/pd', 260717, true, 'daily', 'FUND ID,FUND STATUS', NULL, 'fund_status_pd', true),
+    ('preqin', 'Fund Status PE', 'funds', '/api/fund/fundstatus/pe', 260717, true, 'daily', 'FUND ID,FUND STATUS', NULL, 'fund_status_pe', true),
+    ('preqin', 'Fund Status RE', 'funds', '/api/fund/fundstatus/re', 260717, true, 'daily', 'FUND ID,FUND STATUS', NULL, 'fund_status_re', true),
+    ('preqin', 'Funds (Common)', 'funds', '/api/fund', 260717, true, 'daily', 'FUND ID', NULL, 'funds_common', true),
+    ('preqin', 'Funds HF', 'funds', '/api/fund/hf', 260717, true, 'daily', 'FUND ID', NULL, 'funds_hf', false),
+    ('preqin', 'Funds INF', 'funds', '/api/fund/inf', 260717, true, 'daily', 'FUND ID', NULL, 'funds_inf', true),
+    ('preqin', 'Funds NR', 'funds', '/api/fund/nr', 260717, true, 'daily', 'FUND ID', NULL, 'funds_nr', false),
+    ('preqin', 'Funds PD', 'funds', '/api/fund/pd', 260717, true, 'daily', 'FUND ID', NULL, 'funds_pd', true),
+    ('preqin', 'Funds PE', 'funds', '/api/fund/pe', 260717, true, 'daily', 'FUND ID', NULL, 'funds_pe', true),
+    ('preqin', 'Funds RE', 'funds', '/api/fund/re', 260717, true, 'daily', 'FUND ID', NULL, 'funds_re', true),
+    ('preqin', 'Investment Consultant Addresses', 'investment_consultants', '/api/investmentconsultants/address', 260717, true, 'daily', 'FIRM ID,ADDRESS ID', NULL, 'investment_consultant_addresses', true),
+    ('preqin', 'Investment Consultant Contacts', 'investment_consultants', '/api/investmentconsultants/contact', 260717, true, 'daily', 'FIRM ID,CONTACT ID', NULL, 'investment_consultant_contacts', true),
+    ('preqin', 'Investment Consultant Known Clients', 'investment_consultants', '/api/investmentconsultants/knownclients', 260717, true, 'daily', 'FIRM ID,CLIENT ID', NULL, 'investment_consultant_known_clients', true),
+    ('preqin', 'Investment Consultants', 'investment_consultants', '/api/investmentconsultants', 260717, true, 'daily', 'FIRM ID,CONSULTANT NAME', NULL, 'investment_consultants', true),
+    ('preqin', 'Investor Commitment HF', 'investors', '/api/investor/commitment/hf', 260717, true, 'daily', 'FUND ID,INVESTOR ID', NULL, 'investor_commitment_hf', false),
+    ('preqin', 'Investor Commitment INF', 'investors', '/api/investor/commitment/inf', 260717, true, 'daily', 'FUND ID,INVESTOR ID', NULL, 'investor_commitment_inf', false),
+    ('preqin', 'Investor Commitment NR', 'investors', '/api/investor/commitment/nr', 260717, true, 'daily', 'FUND ID,INVESTOR ID', NULL, 'investor_commitment_nr', false),
+    ('preqin', 'Investor Commitment PD', 'investors', '/api/investor/commitment/pd', 260717, true, 'daily', 'FUND ID,INVESTOR ID', NULL, 'investor_commitment_pd', false),
+    ('preqin', 'Investor Commitment PE', 'investors', '/api/investor/commitment/pe', 260717, true, 'daily', 'FUND ID,INVESTOR ID', NULL, 'investor_commitment_pe', false),
+    ('preqin', 'Investor Commitment RE', 'investors', '/api/investor/commitment/re', 260717, true, 'daily', 'FUND ID,INVESTOR ID', NULL, 'investor_commitment_re', false),
+    ('preqin', 'Investor Contact PD', 'investors', '/api/investor/contact/pd', 260717, true, 'daily', 'FIRM_ID,CONTACT_ID', NULL, 'investor_contact_pd', true),
+    ('preqin', 'Investor Contacts HF', 'investors', '/api/investor/contact/hf', 260717, true, 'daily', 'FIRM_ID,CONTACT_ID', NULL, 'investor_contacts_hf', false),
+    ('preqin', 'Investor Contacts INF', 'investors', '/api/investor/contact/inf', 260717, true, 'daily', 'FIRM_ID,CONTACT_ID', NULL, 'investor_contacts_inf', true),
+    ('preqin', 'Investor Contacts NR', 'investors', '/api/investor/contact/nr', 260717, true, 'daily', 'FIRM_ID,CONTACT_ID', NULL, 'investor_contacts_nr', false),
+    ('preqin', 'Investor Contacts PE', 'investors', '/api/investor/contact/pe', 260717, true, 'daily', 'FIRM_ID,CONTACT_ID', NULL, 'investor_contacts_pe', true),
+    ('preqin', 'Investor Contacts RE', 'investors', '/api/investor/contact/re', 260717, true, 'daily', 'FIRM_ID,CONTACT_ID', NULL, 'investor_contacts_re', true),
+    ('preqin', 'Investor Geolocations', 'investors', '/api/investor/geolocations', 260717, false, 'daily', 'FIRM ID,GOOGLE MAP PLACE ID', NULL, 'investor_geolocations', true),
+    ('preqin', 'Investors (Common)', 'investors', '/api/investor', 260717, true, 'daily', 'FIRM ID', NULL, 'investors_common', true),
+    ('preqin', 'Investors HF', 'investors', '/api/investor/hf', 260717, true, 'daily', 'FIRM ID', NULL, 'investors_hf', false),
+    ('preqin', 'Investors INF', 'investors', '/api/investor/inf', 260717, true, 'daily', 'FIRM ID', NULL, 'investors_inf', true),
+    ('preqin', 'Investors NR', 'investors', '/api/investor/nr', 260717, true, 'daily', 'FIRM ID', NULL, 'investors_nr', false),
+    ('preqin', 'Investors PD', 'investors', '/api/investor/pd', 260717, true, 'daily', 'FIRM ID', NULL, 'investors_pd', true),
+    ('preqin', 'Investors PE', 'investors', '/api/investor/pe', 260717, true, 'daily', 'FIRM ID', NULL, 'investors_pe', true),
+    ('preqin', 'Investors RE', 'investors', '/api/investor/re', 260717, true, 'daily', 'FIRM ID', NULL, 'investors_re', true),
+    ('preqin', 'News Feeds HF', 'news_feeds', '/api/newsfeed/hf', 260717, true, 'daily', 'NEWS ID,FIRM ID', NULL, 'news_feeds_hf', false),
+    ('preqin', 'News Feeds INF', 'news_feeds', '/api/newsfeed/inf', 260717, true, 'daily', 'NEWS ID,FIRM ID', NULL, 'news_feeds_inf', true),
+    ('preqin', 'News Feeds NR', 'news_feeds', '/api/newsfeed/nr', 260717, true, 'daily', 'NEWS ID,FIRM ID', NULL, 'news_feeds_nr', false),
+    ('preqin', 'News Feeds PD', 'news_feeds', '/api/newsfeed/pd', 260717, true, 'daily', 'NEWS ID,FIRM ID', NULL, 'news_feeds_pd', true),
+    ('preqin', 'News Feeds PE and VC', 'news_feeds', '/api/newsfeed/pevc', 260717, true, 'daily', 'NEWS ID,FIRM ID', NULL, 'news_feeds_pe_and_vc', true),
+    ('preqin', 'News Feeds RE', 'news_feeds', '/api/newsfeed/re', 260717, true, 'daily', 'NEWS ID,FIRM ID', NULL, 'news_feeds_re', true),
+    ('preqin', 'News Feeds SEC (Secondaries)', 'news_feeds', '/api/newsfeed/sec', 260717, true, 'daily', 'NEWS ID,FIRM ID', NULL, 'news_feeds_sec_secondaries', true),
+    ('preqin', 'Secondaries Buyers INF', 'secondaries', '/api/secondaries/buyers/inf', 260717, true, 'daily', 'FIRM ID', NULL, 'secondaries_buyers_inf', false),
+    ('preqin', 'Secondaries Buyers NR', 'secondaries', '/api/secondaries/buyers/nr', 260717, true, 'daily', 'FIRM ID', NULL, 'secondaries_buyers_nr', false),
+    ('preqin', 'Secondaries Buyers PD', 'secondaries', '/api/secondaries/buyers/pd', 260717, true, 'daily', 'FIRM ID', NULL, 'secondaries_buyers_pd', false),
+    ('preqin', 'Secondaries Buyers PE', 'secondaries', '/api/secondaries/buyers/pe', 260717, true, 'daily', 'FIRM ID', NULL, 'secondaries_buyers_pe', false),
+    ('preqin', 'Secondaries Buyers RE', 'secondaries', '/api/secondaries/buyers/re', 260717, true, 'daily', 'FIRM ID', NULL, 'secondaries_buyers_re', false),
+    ('preqin', 'Secondaries Buyers VC', 'secondaries', '/api/secondaries/buyers/vc', 260717, true, 'daily', 'FIRM ID', NULL, 'secondaries_buyers_vc', false),
+    ('preqin', 'Secondaries Sellers INF', 'secondaries', '/api/secondaries/sellers/inf', 260717, true, 'daily', 'FIRM ID', NULL, 'secondaries_sellers_inf', false),
+    ('preqin', 'Secondaries Sellers NR', 'secondaries', '/api/secondaries/sellers/nr', 260717, true, 'daily', 'FIRM ID', NULL, 'secondaries_sellers_nr', false),
+    ('preqin', 'Secondaries Sellers PD', 'secondaries', '/api/secondaries/sellers/pd', 260717, true, 'daily', 'FIRM ID', NULL, 'secondaries_sellers_pd', false),
+    ('preqin', 'Secondaries Sellers PE', 'secondaries', '/api/secondaries/sellers/pe', 260717, true, 'daily', 'FIRM ID', NULL, 'secondaries_sellers_pe', false),
+    ('preqin', 'Secondaries Sellers RE', 'secondaries', '/api/secondaries/sellers/re', 260717, true, 'daily', 'FIRM ID', NULL, 'secondaries_sellers_re', false),
+    ('preqin', 'Secondaries Sellers VC', 'secondaries', '/api/secondaries/sellers/vc', 260717, true, 'daily', 'FIRM ID', NULL, 'secondaries_sellers_vc', false),
+    ('preqin', 'Secondaries Transactions INF', 'secondaries', '/api/secondaries/transactions/inf', 260717, true, 'daily', 'SECONDARIES TRANSACTION ID', NULL, 'secondaries_transactions_inf', false),
+    ('preqin', 'Secondaries Transactions NR', 'secondaries', '/api/secondaries/transactions/nr', 260717, true, 'daily', 'SECONDARIES TRANSACTION ID', NULL, 'secondaries_transactions_nr', false),
+    ('preqin', 'Secondaries Transactions PD', 'secondaries', '/api/secondaries/transactions/pd', 260717, true, 'daily', 'SECONDARIES TRANSACTION ID', NULL, 'secondaries_transactions_pd', false),
+    ('preqin', 'Secondaries Transactions PE', 'secondaries', '/api/secondaries/transactions/pe', 260717, true, 'daily', 'SECONDARIES TRANSACTION ID', NULL, 'secondaries_transactions_pe', false),
+    ('preqin', 'Secondaries Transactions RE', 'secondaries', '/api/secondaries/transactions/re', 260717, true, 'daily', 'SECONDARIES TRANSACTION ID', NULL, 'secondaries_transactions_re', false),
+    ('preqin', 'Secondaries Transactions VC', 'secondaries', '/api/secondaries/transactions/vc', 260717, true, 'daily', 'SECONDARIES TRANSACTION ID', NULL, 'secondaries_transactions_vc', false),
+    ('preqin', 'Service Provider Contacts HF', 'service_provider_contacts', '/api/serviceprovider/contact/hf', 260717, true, 'daily', 'FIRM ID,CONTACT ID', NULL, 'service_provider_contacts_hf', false),
+    ('preqin', 'Service Provider Contacts INF', 'service_provider_contacts', '/api/serviceprovider/contact/inf', 260717, true, 'daily', 'FIRM ID,CONTACT ID', NULL, 'service_provider_contacts_inf', true),
+    ('preqin', 'Service Provider Contacts NR', 'service_provider_contacts', '/api/serviceprovider/contact/nr', 260717, true, 'daily', 'FIRM ID,CONTACT ID', NULL, 'service_provider_contacts_nr', false),
+    ('preqin', 'Service Provider Contacts PD', 'service_provider_contacts', '/api/serviceprovider/contact/pd', 260717, true, 'daily', 'FIRM ID,CONTACT ID', NULL, 'service_provider_contacts_pd', true),
+    ('preqin', 'Service Provider Contacts PE', 'service_provider_contacts', '/api/serviceprovider/contact/pe', 260717, true, 'daily', 'FIRM ID,CONTACT ID', NULL, 'service_provider_contacts_pe', true),
+    ('preqin', 'Service Provider Contacts RE', 'service_provider_contacts', '/api/serviceprovider/contact/re', 260717, true, 'daily', 'FIRM ID,CONTACT ID', NULL, 'service_provider_contacts_re', true),
+    ('preqin', 'BDC Holdings', 'private_credit', '/api/privatecredit/bdcholdings', 260717, true, 'daily', 'HOLDING SNAPSHOT ID', NULL, 'bdc_holdings', false),
+    ('preqin', 'Credit Deal Benchmarks', 'private_credit', '/api/privatecredit/creditdealbenchmarks', 260717, true, 'daily', 'BENCHMARK ID', NULL, 'credit_deal_benchmarks', false),
+    ('preqin', 'Transaction Service Providers', 'transaction_service_providers', '/api/transactionserviceprovider', 260717, true, 'daily', 'FIRM ID', NULL, 'transaction_service_providers', true)
+    AS seed(source_system, api_name, api_domain, endpoint_url, api_version_used, is_incremental, refresh_frequency, primary_key_columns, last_watermark_value, target_table, is_active)
+  )
+  SELECT * FROM seed
+) AS src
+ON tgt.source_system = src.source_system AND tgt.endpoint_url = src.endpoint_url AND tgt.api_name = src.api_name
+WHEN MATCHED THEN UPDATE SET
+  tgt.api_domain          = src.api_domain,
+  tgt.api_version_used    = src.api_version_used,
+  tgt.is_incremental      = src.is_incremental,
+  tgt.refresh_frequency   = src.refresh_frequency,
+  tgt.primary_key_columns = src.primary_key_columns,
+  tgt.target_table        = src.target_table,
+  tgt.is_active           = src.is_active
+WHEN NOT MATCHED THEN INSERT (
+  source_system, api_name, api_domain, endpoint_url, api_version_used,
+  is_incremental, refresh_frequency, primary_key_columns,
+  last_watermark_value, target_table, is_active
+) VALUES (
+  src.source_system, src.api_name, src.api_domain, src.endpoint_url, src.api_version_used,
+  src.is_incremental, src.refresh_frequency, src.primary_key_columns,
+  src.last_watermark_value, src.target_table, src.is_active
+);

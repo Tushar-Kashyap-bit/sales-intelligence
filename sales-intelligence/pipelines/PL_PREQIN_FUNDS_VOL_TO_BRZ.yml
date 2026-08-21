@@ -1,0 +1,23 @@
+resources:
+  pipelines:
+    PL_PREQIN_FUNDS_VOL_TO_BRZ:
+      name: PL_PREQIN_FUNDS_VOL_TO_BRZ
+      configuration:
+        pipelines.config_catalog: ${var.catalog}
+        pipelines.config_schema: bronze_preqin
+        pipelines.migration.allowManagedTableOwnershipTransfer: "true"
+        pipelines.pipeline_domains: funds,fund_managers,fund_performance,fund_service_providers
+      libraries:
+        - file:
+            path: ../notebooks/transform/PL_PREQIN_FUNDS_VOL_TO_BRZ/NB_PREQIN_FUNDS_VOL_TO_BRZ_AUTOLOADER.py
+      schema: bronze_preqin
+      continuous: false
+      development: false
+      photon: true
+      channel: CURRENT
+      catalog: ${var.catalog}
+      serverless: true
+      event_log:
+        name: PL_PREQIN_FUNDS_VOL_TO_BRZ
+        schema: bronze_preqin
+        catalog: ${var.catalog}
